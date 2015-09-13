@@ -1,0 +1,1 @@
+cmd_out/Debug/obj.target/third_party/libhttp_parser.a := rm -f out/Debug/obj.target/third_party/libhttp_parser.a && ar crsT out/Debug/obj.target/third_party/libhttp_parser.a out/Debug/obj.target/http_parser/third_party/http-parser/http_parser.o

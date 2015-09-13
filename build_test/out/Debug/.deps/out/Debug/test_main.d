@@ -1,0 +1,1 @@
+cmd_out/Debug/test_main := g++ -pthread  -o out/Debug/test_main -Wl,--start-group out/Debug/obj.target/test_main/http_encode.o out/Debug/obj.target/test_main/test_main.o out/Debug/obj.target/test_main/http_conn.o out/Debug/obj.target/third_party/libhttp_parser.a out/Debug/obj.target/third_party/libuv.a -Wl,--end-group -lm -ldl -lrt
