@@ -27,8 +27,17 @@ struct co_send_recv_t {
 	struct co_buf_t recv_buf;
 	int timeout;
 	int error;
+	int step;
 	void *data;
 };
+
+inline int co_pt_init(co_send_recv_t *copt, void *data) 
+{ 
+	PT_INIT(&copt->pt);
+	copt->error = 0;
+	copt->step = 0;
+	copt->data = data;
+}
 
 PT_THREAD(co_send_recv(struct pt *pt));
 

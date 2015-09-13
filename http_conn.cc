@@ -9,16 +9,7 @@
 
 namespace imcore {
 
-#define PROC_ERR(conn, status) do { \
-	if(!conn) return; \
-	if(status < 0) { \
-		auto err = uv_err_name(status); \
-		CO_LOGE("error: %d|desc: %s", status, err); \
-		conn->cb()(status, err); \
-		uv_close((uv_handle_t *)conn->socket(), close_cb); \
-		return; \
-	} \
-}while(0)
+static PT_THREAD(pt_http_request(struct pt *pt));
 
 /** libuv callback begin **/
 //static void timer_cb(uv_timer_t *handle)
@@ -44,9 +35,10 @@ static void read_cb(uv_stream_t *handle, ssize_t size, const uv_buf_t *buf)
 	auto conn = (HttpConn *)handle->data;
 
 	if(size < 0) free(buf->base);
-	PROC_ERR(conn, (int)size);
+	conn->set_status((int)size);
+	if(conn->HandleError()) return;
 
-	if(buf->base && size > 0) conn->Recv(buf->base, size);
+	if(buf->base && size > 0) conn->RecvData(buf->base, size);
 	free(buf->base);
 }
 
@@ -55,70 +47,26 @@ static void write_cb(uv_write_t *req, int status)
 	auto conn = (HttpConn *)req->handle->data;
 	free(req->data);
 	free(req);
-	PROC_ERR(conn, status);
+	conn->set_status(status);
+	if(conn->HandleError()) return;
 }
 
 static void conn_cb(uv_connect_t *req, int status)
 {
 	auto conn = (HttpConn *)req->data;
-	PROC_ERR(conn, status);
-
-	uv_read_start((uv_stream_t *)conn->socket(), alloc_cb, read_cb);
-
-	HTTPRequest httpreq;
-	if(conn->method() == "GET") httpreq.set_method("GET");
-	else httpreq.set_method("POST");
-
-	if(conn->query().empty()) httpreq.set_uri(conn->path());
-	else httpreq.set_uri(conn->path() + "?" + conn->query());
-
-	httpreq.add_header("Host", conn->host());
-	httpreq.add_header("Accept", "*/*");
-
-	httpreq.set_post_body(conn->req());
-
-	int len = httpreq.size() + 1; // + 1 for snprintf append '\0'
-
-	uv_buf_t buf;
-	buf.base = (char *)malloc(len);
-	httpreq.encode(buf.base, len);
-	buf.len = len;
-
-	//CO_LOGD("send: %d", (int)buf.len);
-
-	uv_write_t *wreq = (uv_write_t *)malloc(sizeof(uv_write_t));
-	wreq->data = buf.base;
-
-	uv_write(wreq, (uv_stream_t *)conn->socket(), &buf, 1, write_cb);
+	conn->set_status(status);
+	++(conn->copt()->step);
+	PT_SCHEDULE(pt_http_request(conn->pt()));
 }
 
 static void on_resolved(uv_getaddrinfo_t *resolver, int status, struct addrinfo *res) 
 {
 	auto conn = (HttpConn *)resolver->data;
-	PROC_ERR(conn, status);
+	conn->set_status(status);
+	conn->set_res(res);
 
-	uint32_t iplist[32];
-	static char addr[255][17];
-	uint32_t addrcnt = 0;
-	for(auto result_pointer = res; result_pointer != NULL && addrcnt < 32; result_pointer = result_pointer->ai_next)
-	{
-		uint32_t ip = 0;
-		if((ip = ((struct sockaddr_in *)(result_pointer->ai_addr))->sin_addr.s_addr))
-		{
-			struct sockaddr_in sockaddr;
-			sockaddr.sin_addr.s_addr = ip;
-			uv_ip4_name(&sockaddr, addr[addrcnt], 16);
-			iplist[addrcnt] = ip;
-			++addrcnt;
-			//CO_LOGD("get ip: %s|cnt: %d", addr, addrcnt);
-		}
-	}
-	int i = rand() % addrcnt;
-	CO_LOGD("http connect to %s", addr[i]);
-	conn->SetAddr(iplist[i]);
-	uv_freeaddrinfo(res);
-
-	uv_tcp_connect(conn->connect(), conn->socket(), (sockaddr *)conn->addr(), conn_cb);
+	++(conn->copt()->step);
+	PT_SCHEDULE(pt_http_request(conn->pt()));
 }
 
 /** libuv callback end **/
@@ -146,27 +94,12 @@ static int on_message_begin(http_parser *p)
 	return 0;
 }
 
-static PT_THREAD(pt_http_request(struct pt *pt));
 static int on_message_complete(http_parser *p)
 {
 	//CO_LOGD("recv complete");
 	auto conn = (HttpConn *)p->data;
-	if(!conn) return 0;
-
-	int headlen = conn->recvdata().size() - conn->body_len();
-	if(headlen <= 0) {
-		conn->cb()(-1, "");
-		return 0;
-	}
-
-	conn->mutable_rsp()->assign(conn->recvdata().c_str() + headlen, conn->body_len());
-	//conn->cb()(0, std::move(rsp));
-	conn->set_complete(1);
+	++(conn->copt()->step);
 	PT_SCHEDULE(pt_http_request(conn->pt()));
-
-	uv_close((uv_handle_t *)conn->socket(), close_cb);
-
-	//CO_LOGE("body hexdump: \n%s", bin2str(rsp.data(), rsp.size()).c_str());
 
 	return 0;
 }
@@ -180,15 +113,31 @@ static PT_THREAD(pt_http_request(struct pt *pt))
 
 	PT_BEGIN(pt);
 
+	//step 1 resolve host name
+	if(conn->Resolve()) goto end;
 	PT_WAIT_UNTIL(pt, 
-			conn->complete() != 0);
+			copt->step == 1);
 
-	conn->cb()(0, conn->rsp());
+	//step 2 connect to svr
+	if(conn->Connect()) goto end;
+	PT_WAIT_UNTIL(pt, 
+			copt->step == 2);
 
+	//step 3 send request
+	if(conn->SendReq()) goto end;
+	PT_WAIT_UNTIL(pt, 
+			copt->step == 3);
+
+	//step 4 parse response
+	if(conn->ParseRsp()) goto end;
+	PT_WAIT_UNTIL(pt, 
+			copt->step == 4);
+
+end:
 	PT_END(pt);
 }
 
-/** pt begin **/
+/** pt end **/
 
 HttpConn::HttpConn()
 {
@@ -213,10 +162,7 @@ HttpConn::HttpConn()
 
 	body_len_ = 0;
 
-	copt_.data = this;
-	PT_INIT(&copt_.pt);
-
-	complete_ = 0;
+	co_pt_init(&copt_, this);
 }
 
 HttpConn::~HttpConn()
@@ -231,58 +177,56 @@ void HttpConn::Request(const std::string &url, const std::string &method,
 	cb_ = cb;
 	method_ = method;
 	req_ = req;
+	url_ = url;
 
-	int rc = 0;
-	if((rc = ParseUrl(url))) {
-		cb(rc, "parse url failed");
-		return;
-	}
-
-	hints_.ai_family = AF_INET;
-	hints_.ai_socktype = SOCK_DGRAM;
-	hints_.ai_flags = AI_CANONNAME;
-	hints_.ai_protocol = 0;
-
-	CO_LOGD("send getaddrinfo req: %s", host_.c_str());
-	if((rc = uv_getaddrinfo(uv_default_loop(), &resolver_, on_resolved, host_.c_str(), NULL, &hints_))) {
-		CO_LOGE("getaddrinfo failed: %s", uv_err_name(rc));
-		cb(rc, "getaddrinfo failed");
-		return;
-	}
+	PT_SCHEDULE(pt_http_request(pt()));
 }
 
-int HttpConn::ParseUrl(const std::string &url)
+int HttpConn::HandleError()
+{
+	if(status_ < 0) {
+		auto err = uv_err_name(status_); 
+		CO_LOGE("error: %d|desc: %s", status_, err);
+		cb_(status_, err);
+		uv_close((uv_handle_t *)&socket_, close_cb);
+		return status_;
+	}
+
+	return 0;
+}
+
+int HttpConn::ParseUrl()
 {
 	memset(&urlparser_, 0, sizeof(urlparser_));
-	int rc = http_parser_parse_url(url.c_str(), url.size(), 0, &urlparser_);
+	int rc = http_parser_parse_url(url_.c_str(), url_.size(), 0, &urlparser_);
 	if(rc) {
-		CO_LOGE("parse url failed: %d", rc);
-		return rc;
+		cb_(rc, "parse url failed");
+		return -1;
 	}
 
 	if (
 			!(urlparser_.field_set & (1 << UF_SCHEMA)) ||
 			!(urlparser_.field_set & (1 << UF_HOST))
 	   ) {
-		CO_LOGE("invalid url");
+		cb_(rc, "invalid url");
 		return -1;
 	}
 
 	int i = 0;
 	
 	i = UF_SCHEMA;
-	schema_.assign(url.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
+	schema_.assign(url_.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
 
 	i = UF_HOST;
-	host_.assign(url.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
+	host_.assign(url_.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
 
 	i = UF_PATH;
-	path_.assign(url.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
+	path_.assign(url_.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
 	if(path_.empty()) path_ = "/";
 
 	if (urlparser_.field_set & (1 << UF_QUERY)) {
 		i = UF_QUERY;
-		query_.assign(url.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
+		query_.assign(url_.c_str() + urlparser_.field_data[i].off, urlparser_.field_data[i].len);
 	}
 
 	port_ = urlparser_.port;
@@ -291,7 +235,7 @@ int HttpConn::ParseUrl(const std::string &url)
 		else port_ = 80;
 	}
 
-	CO_LOGI("schema: %s|host: %s|port: %u|path: %s|query: %s",
+	CO_LOGI("url parsed|schema: %s|host: %s|port: %u|path: %s|query: %s",
 			schema_.c_str(),
 			host_.c_str(),
 			port_,
@@ -301,7 +245,113 @@ int HttpConn::ParseUrl(const std::string &url)
 	return 0;
 }
 
-void HttpConn::Recv(char *base, unsigned int len)
+int HttpConn::Resolve()
+{
+	int rc = 0;
+
+	if(ParseUrl()) return -1;
+
+	hints_.ai_family = AF_INET;
+	hints_.ai_socktype = SOCK_DGRAM;
+	hints_.ai_flags = AI_CANONNAME;
+	hints_.ai_protocol = 0;
+	CO_LOGD("send getaddrinfo req: %s", host_.c_str());
+	if((rc = uv_getaddrinfo(uv_default_loop(), &resolver_, on_resolved, 
+					host_.c_str(), NULL, &hints_))) {
+		CO_LOGE("getaddrinfo failed: %s", uv_err_name(rc));
+		cb_(rc, "getaddrinfo failed");
+		return -1;
+	}
+
+	return 0;
+}
+
+int HttpConn::Connect()
+{
+	if(HandleError()) return -1;
+
+	uint32_t iplist[32];
+	static char saddr[255][17];
+	uint32_t addrcnt = 0;
+	for(auto result_pointer = res_; result_pointer != NULL && addrcnt < 32; result_pointer = result_pointer->ai_next)
+	{
+		uint32_t ip = 0;
+		if((ip = ((struct sockaddr_in *)(result_pointer->ai_addr))->sin_addr.s_addr))
+		{
+			struct sockaddr_in sockaddr;
+			sockaddr.sin_addr.s_addr = ip;
+			uv_ip4_name(&sockaddr, saddr[addrcnt], 16);
+			iplist[addrcnt] = ip;
+			++addrcnt;
+			//CO_LOGD("get ip: %s|cnt: %d", saddr[addrcnt], addrcnt);
+		}
+	}
+	int i = rand() % addrcnt;
+	CO_LOGD("http connect to %s", saddr[i]);
+
+	addr_.sin_family = AF_INET;
+	addr_.sin_addr.s_addr = iplist[i]; 
+	addr_.sin_port = htons(port_);
+
+	uv_freeaddrinfo(res_);
+
+	uv_tcp_connect(&connect_, &socket_, (sockaddr *)&addr_, conn_cb);
+
+	return 0;
+}
+
+int HttpConn::SendReq()
+{
+	if(HandleError()) return -1;
+
+	uv_read_start((uv_stream_t *)&socket_, alloc_cb, read_cb);
+
+	HTTPRequest httpreq;
+	if(method_ == "GET") httpreq.set_method("GET");
+	else httpreq.set_method("POST");
+
+	if(query_.empty()) httpreq.set_uri(path_);
+	else httpreq.set_uri(path_ + "?" + query_);
+
+	httpreq.add_header("Host", host_);
+	httpreq.add_header("Accept", "*/*");
+
+	httpreq.set_post_body(req_);
+
+	int len = httpreq.size() + 1; // + 1 for snprintf append '\0'
+
+	uv_buf_t buf;
+	buf.base = (char *)malloc(len);
+	httpreq.encode(buf.base, len);
+	buf.len = len;
+
+	//CO_LOGD("send: %d", (int)buf.len);
+
+	uv_write_t *wreq = (uv_write_t *)malloc(sizeof(uv_write_t));
+	wreq->data = buf.base;
+
+	uv_write(wreq, (uv_stream_t *)&socket_, &buf, 1, write_cb);
+
+	return 0;
+}
+
+int HttpConn::ParseRsp()
+{
+	int headlen = recvdata_.size() - body_len_;
+	if(headlen <= 0) {
+		cb_(-1, "");
+		return -1;
+	}
+
+	rsp_.assign(recvdata_.c_str() + headlen, body_len_);
+	cb_(0, rsp_);
+	uv_close((uv_handle_t *)&socket_, close_cb);
+
+	//CO_LOGE("body hexdump: \n%s", bin2str(rsp_.data(), rsp_.size()).c_str());
+	return 0;
+}
+
+void HttpConn::RecvData(char *base, unsigned int len)
 {
 	if(!base || !len) return;
 
@@ -315,7 +365,7 @@ void HttpConn::Recv(char *base, unsigned int len)
 			//http_errno_description((enum http_errno)httpparser_.http_errno));
 
 	if(rc != (int)len) {
-		cb()(-1, "http parse failed|recv != parsed");
+		cb_(-1, "http parse failed|recv != parsed");
 		CO_LOGE("http parse failed|recv: %d|parsed: %d", len, rc);
 	}
 }
