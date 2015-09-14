@@ -9,6 +9,7 @@
 			'-frtti',
 		],
         'cflags': [
+			'-std=c++1y',
 			'-Wall',
 			'-Wno-pedantic',
 			'-Wno-long-long',
@@ -36,9 +37,42 @@
 					'-Wl,--exclude-libs,ALL',
 					'-Wl,--gc-sections',
 				],
+                'xcode_settings': {
+                    'DEAD_CODE_STRIPPING': 'YES',
+                },
             },
         },
+        'xcode_settings': {
+            'OTHER_CFLAGS' : [
+				'-Wall',
+				'-fvisibility=hidden',
+			],
+            'OTHER_CPLUSPLUSFLAGS' : [
+				'-Wall',
+				'-fvisibility=hidden',
+				'-DUSE_SQLITE',
+				'-Dgoogle=_t_',
+				'-Dprotobuf=_p_',
+				'-fdata-sections',
+				'-ffunction-sections',
+                    		'-Os',
+			],
+            'CLANG_CXX_LANGUAGE_STANDARD': 'c++11',
+            'CLANG_CXX_LIBRARY': 'libc++',
+            'CLANG_ENABLE_OBJC_ARC': 'YES',
+        },
         'conditions': [
+            ['OS=="ios"', {
+                'xcode_settings' : {
+                    'SDKROOT': 'iphoneos',
+                    'SUPPORTED_PLATFORMS': 'iphonesimulator iphoneos',
+                },
+            }],
+            ['OS=="mac"', {
+                'xcode_settings' : {
+                    'SDKROOT': 'macosx10.10',
+                },
+            }],
         ],
     },
 }

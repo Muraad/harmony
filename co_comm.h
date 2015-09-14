@@ -37,6 +37,8 @@ inline int co_pt_init(co_send_recv_t *copt, void *data)
 	copt->error = 0;
 	copt->step = 0;
 	copt->data = data;
+
+	return 0;
 }
 
 PT_THREAD(co_send_recv(struct pt *pt));

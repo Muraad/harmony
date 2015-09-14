@@ -17,7 +17,7 @@ public:
 	HttpConn();
 	virtual ~HttpConn();
 	void Request(const std::string &url, const std::string &method,
-			const std::string &req, std::function<void(int, const std::string &rsp)> cb);
+			const std::string &req, std::function<void(int code, const std::string &rsp)> cb);
 	void RecvData(char *base, unsigned int len);
 
 	int HandleError();

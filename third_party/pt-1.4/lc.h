@@ -123,8 +123,8 @@
 #ifdef LC_INCLUDE
 #include LC_INCLUDE
 #else
-//#include "lc-switch.h"
-#include "lc-addrlabels.h"
+#include "lc-switch.h"
+//#include "lc-addrlabels.h"
 #endif /* LC_INCLUDE */
 
 #endif /* __LC_H__ */

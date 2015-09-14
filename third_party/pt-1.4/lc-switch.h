@@ -69,7 +69,7 @@ typedef unsigned short lc_t;
 
 #define LC_SET(s) s = __LINE__; case __LINE__:
 
-#define LC_END(s) }
+#define LC_END(s) ;}
 
 #endif /* __LC_SWITCH_H__ */
 

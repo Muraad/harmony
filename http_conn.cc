@@ -171,7 +171,7 @@ HttpConn::~HttpConn()
 }
 
 void HttpConn::Request(const std::string &url, const std::string &method,
-		const std::string &req, std::function<void(int, const std::string &rsp)> cb)
+		const std::string &req, std::function<void(int code, const std::string &rsp)> cb)
 {
 	if(!cb) return;
 	cb_ = cb;

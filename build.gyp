@@ -53,15 +53,11 @@
             'target_name': 'test_main',
             'type': 'executable',
             'dependencies': [
-                #'libtim',
                 'third_party/http_parser.gyp:http_parser',
 				'third_party/uv.gyp:libuv',
             ],
             'include_dirs': [
 				'third_party/pt-1.4/',
-				#'include',
-				#'src',
-                #'net',
             ],
 			#'libraries': [
 			#	'-luuid',
